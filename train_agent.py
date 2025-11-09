@@ -11,7 +11,7 @@ def train_agent(prices, appliances, restricted_hours):
     env = EnergyEnv(prices, appliances, restricted_hours)
     check_env(env, warn=True)
 
-    # ⭐ Improved hyperparameters for better learning
+    # Improved hyperparameters for better learning
     model = PPO(
         "MlpPolicy", 
         env, 
@@ -23,7 +23,7 @@ def train_agent(prices, appliances, restricted_hours):
         verbose=0
     )
     
-    # ⭐ More timesteps for better learning
+    # More timesteps for better learning
     model.learn(total_timesteps=50000)
     model.save("models/energy_agent")
 
@@ -41,15 +41,16 @@ def run_agent(model, prices, appliances, restricted_hours):
     schedule = {a["name"]: [] for a in appliances}
 
     while not done:
-        # Record the hour BEFORE stepping
+        # Record the hour and remaining durations BEFORE stepping
         current_hour = env.current_hour
+        remaining_before_step = {a["name"]: env.remaining_durations[a["name"]] for a in appliances}
         
         action, _ = model.predict(obs, deterministic=True)
         obs, reward, done, _, info = env.step(action)
 
-        # Record scheduled hour for each appliance
+        # Only record if appliance had remaining duration before the step
         for i, a in enumerate(appliances):
-            if action[i] == 1:
+            if action[i] == 1 and remaining_before_step[a["name"]] > 0:
                 schedule[a["name"]].append(current_hour)
 
     # Format hours into human-readable ranges
