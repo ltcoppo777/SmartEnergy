@@ -1,8 +1,19 @@
 # Comfort Score Fix - README
 
 ## Overview
+Inspiration
 
-This package contains a fix for the comfort score calculation issue in the WattYouSave energy optimization application. The AI with Preferences was scoring 0.3/10 even when scheduling appliances during preferred hours, making it appear worse than the baseline Linear Programming approach (2.5/10).
+Energy prices fluctuate throughout the day — yet most homes still run appliances without considering cost or environmental impact. We wanted to create a system that helps households automatically schedule their energy usage to minimize cost without sacrificing comfort.
+Our goal was to combine machine learning, optimization, and real-world data to make energy efficiency simple, intelligent, and personalized.
+
+What It Does:
+1. SmartEnergy is a web-based platform that:
+2. Fetches live electricity prices from ComEd’s 5-minute pricing API
+3. Lets users define their appliances, power usage, and preferred operation hours
+4. Uses both Reinforcement Learning (RL) and Linear Programming (LP) to generate optimized schedules
+5. Balances energy cost reduction with user comfort preferences
+6. Visualizes the final schedule and estimated savings in a clean, interactive dashboard
+7. In short, SmartEnergy helps you save money, save power, and stay comfortable — all at once.
 
 ## Problem Description
 
