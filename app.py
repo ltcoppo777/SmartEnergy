@@ -1,40 +1,41 @@
 import streamlit as st
 import pandas as pd
-from stable_baselines3 import PPO
-from train_agent import train_agent, run_agent
+from optimizer import optimize_schedule_lp, format_schedule_readable
+from train_agent_with_preferences import (
+    train_agent_with_preferences,
+    run_agent_with_preferences,
+    calculate_comfort_score,
+)
 from fetch_live_prices import fetch_comed_prices
-from utils.display_utils import format_schedule_readable
 from utils.appliance_data import appliance_defaults
-
+from datetime import datetime
 
 # -------------------------------
 # Page setup
 # -------------------------------
 st.set_page_config(page_title="SmartEnergy Optimizer", layout="wide")
 st.title("SmartEnergy Optimizer")
-st.write("Plan your appliance usage intelligently using **ComEd's day-ahead electricity prices** and AI optimization.")
+st.write("Compare **Linear Programming** (pure cost) vs **AI with Preferences** (cost + comfort)")
 
 # -------------------------------
-# Fetch latest ComEd prices automatically (CACHED)
+# Fetch prices (CACHED)
 # -------------------------------
-@st.cache_data(ttl=3600)  # Cache for 1 hour (3600 seconds)
+@st.cache_data(ttl=3600)
 def get_prices():
     return fetch_comed_prices()
 
 st.subheader("💲 Latest Energy Prices")
 
-with st.spinner("Fetching latest ComEd day-ahead prices..."):
-    df_prices = get_prices()
+if "df_prices" not in st.session_state:
+    with st.spinner("Fetching latest ComEd day-ahead prices..."):
+        st.session_state.df_prices = get_prices()
 
-# Debug info (you can remove this later)
-if df_prices is not None:
-    st.write(f"📊 Loaded {len(df_prices)} hours of price data")
-    
+df_prices = st.session_state.df_prices
+
 if df_prices is not None and not df_prices.empty:
     st.line_chart(df_prices["price"], height=200)
     st.caption("Day-ahead electricity prices ($/kWh)")
-    
-    # Show the data table as well
+
     with st.expander("📋 View Price Data Table"):
         st.dataframe(df_prices)
 else:
@@ -42,18 +43,13 @@ else:
 
 prices = df_prices["price"].values if df_prices is not None else []
 
-# Show how many price points we have for optimization
 if len(prices) > 0:
-    st.success(f"✅ Ready to optimize with {len(prices)} hourly prices (Min: ${min(prices):.4f}, Max: ${max(prices):.4f})")
-else:
-    st.error("❌ No price data available for optimization")
+    st.success(f"Ready with {len(prices)} hourly prices (Min: ${min(prices):.4f}, Max: ${max(prices):.4f})")
 
 # -------------------------------
 # Appliance Selection
 # -------------------------------
-st.subheader("🏠 Select Your Appliances")
-
-st.info("Choose your appliances and adjust power or duration as needed. Defaults are based on realistic average usage.")
+st.subheader("Select Your Appliances")
 
 selected_appliances = []
 num_appliances = st.slider("How many appliances to optimize?", 1, 10, 3)
@@ -66,55 +62,291 @@ for i in range(num_appliances):
         default_power = appliance_defaults[name]
         power = st.number_input(
             f"{name} Power (kWh)",
-            min_value=0.0, max_value=10.0,
+            min_value=0.0,
+            max_value=10.0,
             value=float(default_power),
-            step=0.1, format="%.2f",
-            key=f"power_{i}"
+            step=0.1,
+            format="%.2f",
+            key=f"power_{i}",
         )
-        st.caption(f"💡 Typical consumption: {default_power:.2f} kWh")
+        st.caption(f"💡 Typical: {default_power:.2f} kWh")
     with col3:
         duration = st.number_input(f"{name} Duration (hours)", min_value=1, max_value=8, value=2, key=f"duration_{i}")
     selected_appliances.append({"name": name, "power": power, "duration": duration})
 
 appliances = selected_appliances
-st.write("### ✅ Selected Appliances")
-st.dataframe(appliances)
 
 # -------------------------------
-# Restriction Input (Sleep / No-use Hours)
+# Time Restrictions
 # -------------------------------
-st.subheader("😴 Time Restrictions")
-sleep_start = st.number_input("Sleep Start Hour (0–23)", min_value=0, max_value=23, value=0)
-sleep_end = st.number_input("Sleep End Hour (0–23)", min_value=0, max_value=23, value=8)
+st.subheader("Time Restrictions")
+st.info("⏰ Enter actual clock times for when appliances should NOT run (e.g., sleep hours)")
 
-restricted_hours = list(range(sleep_start, sleep_end)) if sleep_end > sleep_start else []
+col1, col2 = st.columns(2)
+with col1:
+    sleep_start_time = st.time_input("Restriction Start Time", value=datetime.strptime("00:00", "%H:%M").time())
+with col2:
+    sleep_end_time = st.time_input("Restriction End Time", value=datetime.strptime("08:00", "%H:%M").time())
+
+
+def time_to_indices(start_time, end_time, df_prices):
+    """Convert clock times to array indices"""
+    restricted_indices = []
+
+    if df_prices is None or df_prices.empty:
+        return restricted_indices
+
+    start_hour = start_time.hour
+    end_hour = end_time.hour
+
+    for idx, row in df_prices.iterrows():
+        time_str = row["time"]
+        try:
+            time_obj = datetime.strptime(time_str, "%I:%M %p").time()
+            hour = time_obj.hour
+
+            if start_hour <= end_hour:
+                if start_hour <= hour < end_hour:
+                    restricted_indices.append(idx)
+            else:
+                if hour >= start_hour or hour < end_hour:
+                    restricted_indices.append(idx)
+        except:
+            continue
+
+    return restricted_indices
+
+
+restricted_hours = time_to_indices(sleep_start_time, sleep_end_time, df_prices)
+
+if restricted_hours:
+    st.caption(f"Restricted hours: {', '.join([df_prices.iloc[i]['time'] for i in restricted_hours if i < len(df_prices)])}")
 
 # -------------------------------
-# AI Optimization (Train + Run)
+# USER PREFERENCES (NEW!)
 # -------------------------------
-st.subheader("🤖 Smart Optimization")
+st.subheader("⭐ User Comfort Preferences")
+st.info("💡 Tell the AI when you prefer (or want to avoid) running each appliance. Click hours to toggle!")
 
-if st.button("Run SmartEnergy AI Optimization"):
-    with st.spinner("Training AI agent and optimizing schedule..."):
-        model = train_agent(prices, appliances, restricted_hours)
-        schedule = run_agent(model, prices, appliances, restricted_hours)
+preferences = {}
 
-    st.success("✅ AI-Optimized Schedule:")
-    st.json(schedule)
+# Initialize session state for selections
+if "preference_selections" not in st.session_state:
+    st.session_state.preference_selections = {}
 
-    # --- Calculate cost savings ---
-    total_cost_optimized = sum(
-        prices[h] * next(a['power'] for a in appliances if a['name'] == name)
-        for name, hours in schedule.items() if isinstance(hours, list)
-        for h in hours
-    )
-    total_cost_peak = sum(
-        max(prices) * next(a['power'] for a in appliances if a['name'] == name) * a['duration']
-        for a in appliances
-    )
+with st.expander("🎛️ Configure Preferences (Optional - expand to customize)", expanded=False):
+    for idx, appliance in enumerate(appliances):
+        appliance_name = appliance["name"]
+        unique_key = f"{idx}_{appliance_name}"
 
-    savings = total_cost_peak - total_cost_optimized
-    st.metric("💰 Estimated Daily Savings", f"${savings:.2f}")
+        st.markdown(f"### {appliance_name}")
 
-else:
-    st.info("Press the button above to let the AI optimize your schedule based on ComEd's upcoming prices.")
+        if unique_key not in st.session_state.preference_selections:
+            st.session_state.preference_selections[unique_key] = {"avoid": set(), "prefer": set()}
+
+        col1, col2 = st.columns(2)
+
+        # Avoid hours
+        with col1:
+            st.markdown("**🚫 Hours to Avoid** (click to toggle)")
+            avoid_cols = st.columns(8)
+            for hour in range(24):
+                col_idx = hour % 8
+                with avoid_cols[col_idx]:
+                    is_avoided = hour in st.session_state.preference_selections[unique_key]["avoid"]
+                    button_type = "primary" if is_avoided else "secondary"
+                    button_label = f"{'✓ ' if is_avoided else ''}{hour:02d}"
+
+                    if st.button(
+                        button_label,
+                        key=f"avoid_{unique_key}_{hour}",
+                        type=button_type,
+                        use_container_width=True,
+                    ):
+                        if hour in st.session_state.preference_selections[unique_key]["avoid"]:
+                            st.session_state.preference_selections[unique_key]["avoid"].remove(hour)
+                        else:
+                            st.session_state.preference_selections[unique_key]["avoid"].add(hour)
+                            st.session_state.preference_selections[unique_key]["prefer"].discard(hour)
+                        st.rerun()
+
+            avoid_penalty = st.slider(
+                "Avoid penalty (how important?)", 0.0, 5.0, 2.0, 0.5, key=f"avoid_penalty_{unique_key}"
+            )
+
+            if st.session_state.preference_selections[unique_key]["avoid"]:
+                st.caption(f"Avoiding: {sorted(st.session_state.preference_selections[unique_key]['avoid'])}")
+
+            if st.button(f"Clear Avoid", key=f"clear_avoid_{unique_key}"):
+                st.session_state.preference_selections[unique_key]["avoid"].clear()
+                st.rerun()
+
+        # Preferred hours
+        with col2:
+            st.markdown("**⭐ Preferred Hours** (click to toggle)")
+            prefer_cols = st.columns(8)
+            for hour in range(24):
+                col_idx = hour % 8
+                with prefer_cols[col_idx]:
+                    is_preferred = hour in st.session_state.preference_selections[unique_key]["prefer"]
+                    button_type = "primary" if is_preferred else "secondary"
+                    button_label = f"{'✓ ' if is_preferred else ''}{hour:02d}"
+
+                    if st.button(
+                        button_label,
+                        key=f"prefer_{unique_key}_{hour}",
+                        type=button_type,
+                        use_container_width=True,
+                    ):
+                        if hour in st.session_state.preference_selections[unique_key]["prefer"]:
+                            st.session_state.preference_selections[unique_key]["prefer"].remove(hour)
+                        else:
+                            st.session_state.preference_selections[unique_key]["prefer"].add(hour)
+                            st.session_state.preference_selections[unique_key]["avoid"].discard(hour)
+                        st.rerun()
+
+            prefer_bonus = st.slider(
+                "Prefer bonus (how much bonus?)", 0.0, 5.0, 1.0, 0.5, key=f"prefer_bonus_{unique_key}"
+            )
+
+            if st.session_state.preference_selections[unique_key]["prefer"]:
+                st.caption(f"Preferring: {sorted(st.session_state.preference_selections[unique_key]['prefer'])}")
+
+            if st.button(f"Clear Prefer", key=f"clear_prefer_{unique_key}"):
+                st.session_state.preference_selections[unique_key]["prefer"].clear()
+                st.rerun()
+
+        preferences[appliance_name] = {
+            "avoid_hours": list(st.session_state.preference_selections[unique_key]["avoid"]),
+            "avoid_penalty": avoid_penalty,
+            "preferred_hours": list(st.session_state.preference_selections[unique_key]["prefer"]),
+            "preferred_bonus": prefer_bonus,
+        }
+
+        st.divider()
+
+# Quick presets
+st.markdown("### 🎯 Quick Presets")
+preset_col1, preset_col2, preset_col3, preset_col4 = st.columns(4)
+
+with preset_col1:
+    if st.button("🌙 Night Sleeper", help="Avoid 10PM-8AM"):
+        for idx, appliance in enumerate(appliances):
+            name = appliance["name"]
+            unique_key = f"{idx}_{name}"
+            st.session_state.preference_selections[unique_key] = {
+                "avoid": set(list(range(22, 24)) + list(range(0, 8))),
+                "prefer": set(range(10, 18)),
+            }
+        st.rerun()
+
+with preset_col2:
+    if st.button("🌅 Early Bird", help="Prefer morning hours"):
+        for idx, appliance in enumerate(appliances):
+            name = appliance["name"]
+            unique_key = f"{idx}_{name}"
+            st.session_state.preference_selections[unique_key] = {
+                "avoid": set(range(20, 24)),
+                "prefer": set(range(6, 12)),
+            }
+        st.rerun()
+
+with preset_col3:
+    if st.button("🦉 Night Owl", help="Prefer evening hours"):
+        for idx, appliance in enumerate(appliances):
+            name = appliance["name"]
+            unique_key = f"{idx}_{name}"
+            st.session_state.preference_selections[unique_key] = {
+                "avoid": set(range(6, 12)),
+                "prefer": set(range(18, 23)),
+            }
+        st.rerun()
+
+with preset_col4:
+    if st.button("🧹 Clear All", help="Remove all preferences"):
+        for idx, appliance in enumerate(appliances):
+            name = appliance["name"]
+            unique_key = f"{idx}_{name}"
+            st.session_state.preference_selections[unique_key] = {"avoid": set(), "prefer": set()}
+        st.rerun()
+
+# -------------------------------
+# 🚀 Run Optimization
+# -------------------------------
+st.header("🚀 Run Optimization")
+
+col1, col2 = st.columns(2)
+
+# Initialize placeholders in session state
+if "schedule_lp" not in st.session_state:
+    st.session_state.schedule_lp = None
+    st.session_state.total_cost_lp = None
+
+if "schedule_ai" not in st.session_state:
+    st.session_state.schedule_ai = None
+    st.session_state.comfort_score = None
+
+# --- LP Optimizer ---
+if col1.button("💡 Run LP Optimizer"):
+    with st.spinner("Running Linear Programming optimizer..."):
+        schedule_lp, total_cost_lp = optimize_schedule_lp(prices, appliances, restricted_hours)
+        st.session_state.schedule_lp = schedule_lp
+        st.session_state.total_cost_lp = total_cost_lp
+
+        st.success("✅ Linear Programming optimization complete!")
+        st.json(format_schedule_readable(schedule_lp, appliances))
+        st.metric("Total Cost ($)", f"{total_cost_lp:.4f}")
+
+# --- AI Optimizer ---
+if col2.button("🤖 Run AI Optimizer (with Preferences)"):
+    with st.spinner("Training AI agent (may take ~30–45 seconds)..."):
+        model = train_agent_with_preferences(prices, appliances, restricted_hours, preferences)
+        schedule_ai = run_agent_with_preferences(model, prices, appliances, restricted_hours, preferences)
+        comfort_score = calculate_comfort_score(schedule_ai, preferences)
+
+        st.session_state.schedule_ai = schedule_ai
+        st.session_state.comfort_score = comfort_score
+
+        st.success("✅ AI optimization complete!")
+        st.metric("Comfort Score", f"{comfort_score:.2f}/10")
+        st.json(format_schedule_readable(schedule_ai, appliances))
+
+# -------------------------------
+# ⚖️ Comparison Section
+# -------------------------------
+st.divider()
+st.header("⚖️ Compare LP vs AI Optimizer")
+
+if st.button("Compare Results"):
+    if (
+        st.session_state.schedule_lp is None
+        or st.session_state.schedule_ai is None
+        or st.session_state.total_cost_lp is None
+        or st.session_state.comfort_score is None
+    ):
+        st.warning("⚠️ You must run both the LP and AI optimizers before comparing.")
+    else:
+        st.success("✅ Comparison ready!")
+
+        colA, colB = st.columns(2)
+        with colA:
+            st.subheader("💡 Linear Programming")
+            st.metric("Total Cost ($)", f"{st.session_state.total_cost_lp:.4f}")
+            st.json(format_schedule_readable(st.session_state.schedule_lp, appliances))
+
+        with colB:
+            st.subheader("🤖 AI Optimizer (Preferences)")
+            st.metric("Comfort Score", f"{st.session_state.comfort_score:.2f}/10")
+            st.json(format_schedule_readable(st.session_state.schedule_ai, appliances))
+
+        # Show difference summary
+        st.divider()
+        cost_diff = st.session_state.total_cost_lp  # base
+        st.markdown(
+            f"""
+            ### 📊 Summary:
+            - **LP** minimizes cost only → ${st.session_state.total_cost_lp:.4f}
+            - **AI** balances cost + comfort → Comfort: {st.session_state.comfort_score:.2f}/10
+            - 💬 *Use AI mode when comfort matters more than raw savings.*
+            """
+        )
