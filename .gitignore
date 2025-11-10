@@ -18,3 +18,11 @@ venv/
 data/*.csv
 !data/prices.csv
 !data/carbon.csv
+
+
+#Ignore vscode AI rules
+.github\instructions\codacy.instructions.md
+node_modules
+
+# Windows reserved filenames
+nul

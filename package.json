@@ -1,0 +1,28 @@
+{
+  "name": "smart-energy-optimizer",
+  "version": "1.0.0",
+  "description": "Smart Energy Optimization System with ML",
+  "scripts": {
+    "install:all": "cd backend && pip install -r requirements.txt && cd ../frontend && npm install",
+    "dev": "concurrently --kill-others-on-fail \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "cd backend && python run.py",
+    "dev:frontend": "cd frontend && npm run dev",
+    "train:agent": "python train_agent_with_preferences.py",
+    "start:all": "concurrently --kill-others-on-fail \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "start:with-train": "concurrently --kill-others-on-fail \"npm:dev:backend\" \"npm:dev:frontend\" \"npm:train:agent\""
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^8.2.2",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.17"
+  },
+  "keywords": [
+    "energy",
+    "optimization",
+    "machine-learning",
+    "reinforcement-learning"
+  ],
+  "author": "",
+  "license": "ISC"
+}

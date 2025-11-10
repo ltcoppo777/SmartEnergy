@@ -64,10 +64,6 @@ class EnergyEnv(gym.Env):
         # Reward: negative cost (we want to minimize it)
         reward -= total_cost
 
-        # Penalty for too many concurrent appliances (realistic load)
-        if active_appliances > 2:
-            reward -= 0.5 * (active_appliances - 2)
-
         self.current_hour += 1
         done = self.current_hour >= self.num_hours or all(v <= 0 for v in self.remaining_durations.values())
         

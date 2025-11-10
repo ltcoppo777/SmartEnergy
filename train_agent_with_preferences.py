@@ -55,45 +55,69 @@ def run_agent_with_preferences(model, prices, appliances, restricted_hours, pref
 
     return schedule
 
-def calculate_comfort_score(schedule, preferences):
-
+def calculate_comfort_score(schedule, preferences, prices=None, appliances=None):
+    """
+    Calculate comfort score using three-tier architecture:
+    
+    Tier 1 (Foundation): Cost Efficiency - how well schedule uses cheap hours
+    Tier 2 (Adjustment): Avoid Hours - penalty for user comfort violations  
+    Tier 3 (Bonus): Preferred Hours - reward for ideal time windows
+    
+    Args:
+        schedule: dict of appliance_name → list of scheduled hours
+        preferences: dict of appliance_name → {avoid_hours, preferred_hours, preference_strength}
+        prices: optional list of 24 hourly prices
+        appliances: optional list of appliances with power info
+    
+    Returns:
+        float: comfort score 0-10
+    """
+    if not schedule or not preferences:
+        return 0.0
+    
     total_score = 0
-    total_possible = 0
+    total_count = 0
 
     for appliance_name, pref in preferences.items():
         if appliance_name not in schedule:
             continue
 
         hours = schedule[appliance_name]
+        if not hours:
+            continue
+
         avoid_hours = pref.get("avoid_hours", [])
         preferred_hours = pref.get("preferred_hours", [])
-        prefer_bonus = pref.get("preference_strength", 3)  # 1–5 scale
+        preference_strength = pref.get("preference_strength", 3)
 
-        # weightings
-        avoid_penalty = 3 * prefer_bonus      # heavy penalty for violating avoids
-        prefer_reward = 4 * prefer_bonus      # reward for following preferences
-        neutral_reward = 0.5                  # small baseline
-        completion_bonus = 2 * prefer_bonus   # extra if all required hours are satisfied
+        cost_score = 5.0
+        if prices and len(prices) >= 24:
+            prices_array = np.array(prices[:24])
+            price_range = np.max(prices_array) - np.min(prices_array)
+            
+            if price_range > 0:
+                avg_price_schedule = np.mean([prices_array[int(h) % 24] for h in hours])
+                avg_price_day = np.mean(prices_array)
+                cost_efficiency = (avg_price_day - avg_price_schedule) / price_range
+                cost_score = max(0, min(10, 5 + cost_efficiency * 5))
 
-        score = 0
-        for hour in hours:
-            if hour in avoid_hours:
-                score -= avoid_penalty
-            elif hour in preferred_hours:
-                score += prefer_reward
-            else:
-                score += neutral_reward
+        avoid_violations = sum(1 for h in hours if h in avoid_hours)
+        violation_rate = avoid_violations / len(hours) if hours else 0
+        penalty_weight = 2.0 * preference_strength
+        avoid_adjustment = -(violation_rate * penalty_weight)
 
-        # full satisfaction bonus (no avoids, all in preferred if possible)
-        if all(h in preferred_hours for h in hours) and not any(h in avoid_hours for h in hours):
-            score += completion_bonus
+        preferred_hits = sum(1 for h in hours if h in preferred_hours)
+        coverage = preferred_hits / len(hours) if hours else 0
+        preferred_bonus = coverage * 0.5 * 10
 
-        total_score += max(score, 0)  # no negative totals
-        total_possible += len(hours) * prefer_reward + completion_bonus
+        appliance_score = cost_score + avoid_adjustment + preferred_bonus
+        appliance_score = min(10, max(0, appliance_score))
 
-    # normalize to 0–10
-    if total_possible == 0:
+        total_score += appliance_score
+        total_count += 1
+
+    if total_count == 0:
         return 0.0
 
-    normalized = (total_score / total_possible) * 10
-    return round(min(10, normalized), 2)
+    final_score = total_score / total_count
+    return round(min(10, max(0, final_score)), 2)

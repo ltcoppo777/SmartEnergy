@@ -71,14 +71,14 @@ def fetch_comed_prices():
         now = datetime.now(pytz.timezone("America/Chicago"))
         df = df[df["datetime"] >= now]
 
-        # ⭐ NEW CHECK: If filtering removed all data, use sample data
+        # NEW CHECK: If filtering removed all data, use sample data
         if df.empty:
-            print("⚠️ API returned only historical data (nothing in the future)")
-            print("📊 Using sample price data instead...")
+            print("API returned only historical data (nothing in the future)")
+            print("Using sample price data instead...")
             df = generate_sample_prices()
             os.makedirs("data", exist_ok=True)
             df.to_csv("data/prices.csv", index=False)
-            print(f"✅ Generated {len(df)} hours of sample price data.")
+            print(f"Generated {len(df)} hours of sample price data.")
             return df
 
         # Format timestamps to AM/PM display
@@ -87,17 +87,17 @@ def fetch_comed_prices():
         os.makedirs("data", exist_ok=True)
         df[["time", "price"]].to_csv("data/prices.csv", index=False)
 
-        print(f"✅ Loaded {len(df)} 5-minute data points from now onward.")
+        print(f"Loaded {len(df)} 5-minute data points from now onward.")
         return df[["time", "price"]]
 
     except Exception as e:
-        print(f"⚠️ Could not fetch live ComEd prices: {e}")
-        print("📊 Using sample price data instead...")
+        print(f"Could not fetch live ComEd prices: {e}")
+        print("Using sample price data instead...")
         
         # Generate and save sample data
         df = generate_sample_prices()
         os.makedirs("data", exist_ok=True)
         df.to_csv("data/prices.csv", index=False)
         
-        print(f"✅ Generated {len(df)} hours of sample price data.")
+        print(f"Generated {len(df)} hours of sample price data.")
         return df

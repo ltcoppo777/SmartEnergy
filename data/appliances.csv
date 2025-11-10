@@ -1,0 +1,6 @@
+appliance_name,power_kw,duration_hours
+Washing Machine,0.30,2
+Dryer,2.50,1
+Dishwasher,1.50,2
+Microwave,0.20,0.5
+Oven,2.30,1
